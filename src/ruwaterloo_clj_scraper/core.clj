@@ -100,7 +100,7 @@
 
 (defn insert-from-post
   "Given a schema (table spec) and a post,
-  get a vectors suitable for an insert into the database."
+  get a vector of values suitable for an insert into the database."
   [schema {:keys [kind data] :as post}]
   (assert (= kind "t3") "Expected 't3' kind for post")
   (mapv (fn [[col _]] (col data)) ruwaterloo-posts-schema))
