@@ -5,7 +5,7 @@
   :dependencies [[org.clojure/clojure "1.8.0"]
                  [org.clojure/core.async "0.3.442"]
                  [org.clojure/data.json "0.2.6"]
-                 [org.clojure/java.jdbc "0.7.0-alpha3"]
+                 [funcool/clojure.jdbc "0.9.0"] ; clojure.java.jdbc sucks
                  [org.clojure/tools.cli "0.3.5"]
                  [org.xerial/sqlite-jdbc "3.16.1"]
                  [clj-http "2.3.0"]

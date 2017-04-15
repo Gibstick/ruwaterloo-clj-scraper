@@ -1,11 +1,11 @@
 (ns ruwaterloo-clj-scraper.core
   (:require
     [ruwaterloo-clj-scraper.reddit :refer :all]
-    [clojure.java.jdbc :as jdbc]
     [clojure.string :as str]
     [clojure.core.async :as async :refer
      [timeout <! <!! >! >!! thread chan go go-loop sliding-buffer]]
     [clojure.tools.cli :refer [parse-opts]]
+    [jdbc.core :as jdbc]
     [taoensso.timbre :as timbre])
   (:gen-class))
 
@@ -73,13 +73,11 @@
    [:quarantine "INTEGER"]                                  ; boolean
    ])
 
-;; TODO: is the status table obsolete, since we can fetch all 1000 in 10 seconds?
 (def status-schema
   [[:subreddit "TEXT PRIMARY KEY NOT NULL"]
    [:after "TEXT"]
    [:before "TEXT"]
    [:ts "INTEGER"]])
-
 
 
 ;; jdbc doesn't support IF NOT EXISTS
@@ -92,10 +90,11 @@
                (map #(format "%s %s" (name (nth % 0)) (nth % 1)))
                (str/join ", "))))
 
+
 (defn initialize-db! [db]
-  (jdbc/with-db-transaction [db db]
-    (jdbc/execute! db (create-table-if-not-exists-ddl "ruwaterloo_posts" ruwaterloo-posts-schema))
-    (jdbc/execute! db (create-table-if-not-exists-ddl "status" status-schema)))
+  (jdbc/atomic db
+    (jdbc/execute db (create-table-if-not-exists-ddl "ruwaterloo_posts" ruwaterloo-posts-schema))
+    (jdbc/execute db (create-table-if-not-exists-ddl "status" status-schema)))
   nil)
 
 
@@ -106,17 +105,16 @@
   (assert (= kind "t3") "Expected 't3' kind for post")
   (mapv (fn [[col _]] (col data)) ruwaterloo-posts-schema))
 
-(defn insert-posts-dml
-  "Generates a vector containing the INSERT query
-  and vectors of paramters to be inserted using jdbc/execute!
-  with :multi true.
+(defn insert-post-dml
+  "Generates a sqlvec containing the INSERT query
+  and vectors of parameters.
 
   Does OR IGNORE"
-  [table schema posts]
+  [table schema post]
   (into [(format "INSERT OR IGNORE INTO %s VALUES (%s)"
                  table
                  (str/join ", " (repeat (count schema) "?")))]
-        (map #(insert-from-post schema %) posts)))
+        (insert-from-post schema post)))
 
 (defn insert-posts!
   "Insert a sequence of posts into the database.
@@ -126,12 +124,15 @@
 
   Returns the number of posts inserted."
   [db table schema posts]
-  (->> (jdbc/execute! db (insert-posts-dml table schema posts) {:multi? true})
-       (reduce +)))
+  (jdbc/atomic db
+    (->>
+      (map (fn [post] (jdbc/execute db (insert-post-dml table schema post)))
+           posts)
+      (reduce +))))
 
 
 (defn- after [db subreddit]
-  (first (jdbc/query db ["select after from status where subreddit = ?"
+  (first (jdbc/fetch db ["select after from status where subreddit = ?"
                          subreddit])))
 
 (defn scrape!
@@ -195,9 +196,9 @@
 ;; inserting into status table is obsolete?
 (comment
   (jdbc/with-db-transaction [db db]
-    (jdbc/delete! db :status ["subreddit = ?" "uwaterloo"])
-    (jdbc/insert! db :status [:subreddit :after :ts]
-                  ["uwaterloo" next-after ts])))
+                            (jdbc/delete! db :status ["subreddit = ?" "uwaterloo"])
+                            (jdbc/insert! db :status [:subreddit :after :ts]
+                                          ["uwaterloo" next-after ts])))
 
 
 ;; increasing levels of verbosity
@@ -246,9 +247,8 @@
 (defn -main
   [& args]
   (timbre/set-level! :error)
-  (let [db {:classname   "org.sqlite.JDBC"
-            :subprotocol "sqlite"
-            :subname     "ruwaterloo.sqlite3"}
+  (let [dbspec {:subprotocol "sqlite"
+                :subname     "ruwaterloo.sqlite3"}
 
         {:keys [ok? client-id client-secret user-agent force? wait-seconds verbosity
                 exit-code exit-message]}
@@ -258,29 +258,30 @@
 
         reddit
         (and ok? (reddit-oauth2-readonly client-id client-secret user-agent))]
-    (timbre/set-level!
-      (->> (count timbre-log-levels) dec (min verbosity) (nth timbre-log-levels)))
+    (with-open [conn (jdbc/connection dbspec)]
+      (timbre/set-level!
+        (->> (count timbre-log-levels) dec (min verbosity) (nth timbre-log-levels)))
 
-    (if-not ok?
-      (do
-        (println exit-message)
-        (System/exit exit-code))
-      (do
-        (initialize-db! db)
-        (go-loop []
-          (timbre/debug "Allowing 1 request")
-          (<! (timeout 1000))
-          (>! rate-limiter true)
-          (recur))
-        (loop []
-          (timbre/info "Scraping")
-          (scrape! db reddit
-                   {:force? force? :rate-limiter rate-limiter})
-          (when wait-seconds
-            (timbre/infof "Waiting %ss between scrapes" wait-seconds)
-            ;; this code is too general right now but we want to be safe
-            ;; wait for the longer of the two
-            (doseq [chan [(go (<! (timeout (* wait-seconds 1000))))
-                          (go (<! rate-limiter))]]
-              (<!! chan))
-            (recur)))))))
+      (if-not ok?
+        (do
+          (println exit-message)
+          (System/exit exit-code))
+        (do
+          (initialize-db! conn)
+          (go-loop []
+            (timbre/debug "Allowing 1 request")
+            (<! (timeout 1000))
+            (>! rate-limiter true)
+            (recur))
+          (loop []
+            (timbre/info "Scraping")
+            (scrape! conn reddit
+                     {:force? force? :rate-limiter rate-limiter})
+            (when wait-seconds
+              (timbre/infof "Waiting %ss between scrapes" wait-seconds)
+              ;; this code is too general right now but we want to be safe
+              ;; wait for the longer of the two
+              (doseq [chan [(go (<! (timeout (* wait-seconds 1000))))
+                            (go (<! rate-limiter))]]
+                (<!! chan))
+              (recur))))))))
