@@ -3,7 +3,8 @@
     [ruwaterloo-clj-scraper.reddit :refer :all]
     [clojure.java.jdbc :as jdbc]
     [clojure.string :as str]
-    [clojure.core.async :refer [timeout <! <!! >! >!! thread]]
+    [clojure.core.async :as async :refer
+     [timeout <! <!! >! >!! thread chan go go-loop sliding-buffer]]
     [clojure.tools.cli :refer [parse-opts]]
     [taoensso.timbre :as timbre])
   (:gen-class))
@@ -157,19 +158,19 @@
   per second, as per reddit's rate limits. We don't do anything
   fancy -- if a request takes longer than 1 second, the next
   request will be made as soon as the current one finishes.
+
+  Set :rate-limiter in opts to a channel that controls rate limiting.
+  The channel should be ready for taking at most once per second.
   "
   ([db reddit] (scrape! db reddit {}))
-  ([db reddit {:keys [force?]}]
+  ([db reddit {:keys [force? rate-limiter]}]
    (loop [after (after db "uwaterloo")
           seen #{}]
      (let [limit 100
            params (cond-> {:limit limit} after (assoc :after after))
-           ;; throttling to at most 1 per second
-           timer (timeout 1000)
-
+           timer (or rate-limiter (timeout 1000))
            resp (reddit-get->json reddit "https://oauth.reddit.com/r/uwaterloo/new.json"
                                   params)
-           ts (System/currentTimeMillis)
            posts (get-in resp [:data :children])
            next-after (get-in resp [:data :after])
            inserted (insert-posts! db "ruwaterloo_posts" ruwaterloo-posts-schema posts)
@@ -179,8 +180,7 @@
            (and force? (into #{} (map #(get-in % [:data :id])) posts))
 
            intersect
-           (clojure.set/intersection post-ids seen)
-           ]
+           (clojure.set/intersection post-ids seen)]
        (assert (<= inserted limit) "Only inserts up to limit")
 
        (timbre/infof "Inserted %s" inserted)
@@ -188,10 +188,9 @@
 
        (when (or (and force? (empty? intersect))
                  (= inserted limit))
+         (timbre/debugf "Waiting on rate limiter")
          (<!! timer)
          (recur next-after (clojure.set/union post-ids seen)))))))
-
-;; TODO: global rate limiter to simplify rate-limiting logic
 
 ;; inserting into status table is obsolete?
 (comment
@@ -255,20 +254,33 @@
                 exit-code exit-message]}
         (validate-args args)
 
+        rate-limiter (chan 1)
+
         reddit
         (and ok? (reddit-oauth2-readonly client-id client-secret user-agent))]
     (timbre/set-level!
       (->> (count timbre-log-levels) dec (min verbosity) (nth timbre-log-levels)))
+
     (if-not ok?
       (do
         (println exit-message)
         (System/exit exit-code))
       (do
         (initialize-db! db)
+        (go-loop []
+          (timbre/debug "Allowing 1 request")
+          (<! (timeout 1000))
+          (>! rate-limiter true)
+          (recur))
         (loop []
           (timbre/info "Scraping")
-          (scrape! db reddit {:force? force?})
+          (scrape! db reddit
+                   {:force? force? :rate-limiter rate-limiter})
           (when wait-seconds
-            (timbre/infof "Waiting %s seconds" wait-seconds)
-            (<!! (timeout (* wait-seconds 1000)))
+            (timbre/infof "Waiting %ss between scrapes" wait-seconds)
+            ;; this code is too general right now but we want to be safe
+            ;; wait for the longer of the two
+            (doseq [chan [(go (<! (timeout (* wait-seconds 1000))))
+                          (go (<! rate-limiter))]]
+              (<!! chan))
             (recur)))))))
