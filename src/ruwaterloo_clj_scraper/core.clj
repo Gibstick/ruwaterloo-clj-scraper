@@ -9,9 +9,6 @@
     [taoensso.timbre :as timbre])
   (:gen-class))
 
-#_(def reddit
-  (reddit-oauth2-readonly "client-id-here" "client-secret-here" "user-agent-here"))
-
 ;; keys we don't want from the json
 ;; this isn't used because we grab the keys directly from the schema map
 (def ^:const key-blacklist
