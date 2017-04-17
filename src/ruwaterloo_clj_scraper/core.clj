@@ -208,11 +208,7 @@
 (def timbre-log-levels [:warn :info :debug :trace])
 
 (def cli-opts
-  [["-u" "--client-id CLIENT-ID" "Client ID"
-    :id :client-id]
-   ["-p" "--client-secret CLIENT-SECRET" "Client Secret"
-    :id :client-secret]
-   ["-a" "--user-agent USER-AGENT" "User Agent"
+  [["-a" "--user-agent USER-AGENT" "User Agent"
     :id :user-agent]
    ["-f" "--force" "Force scraping as many posts as possible, regardless of posts in DB"
     :id :force?]
@@ -253,7 +249,13 @@
   (let [dbspec {:subprotocol "sqlite"
                 :subname     "ruwaterloo.sqlite3"}
 
-        {:keys [ok? client-id client-secret user-agent force? wait-seconds verbosity
+        client-id     (System/getenv "CLJ_SCRAPER_CLIENT_ID")
+        client-secret (System/getenv "CLJ_SCRAPER_CLIENT_SECRET")
+
+        _ (assert client-id)
+        _ (assert client-secret)
+
+        {:keys [ok? user-agent force? wait-seconds verbosity
                 exit-code exit-message]}
         (validate-args args)
 
