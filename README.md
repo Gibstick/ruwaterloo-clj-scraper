@@ -5,9 +5,10 @@ writes them into an sqlite database. The app itself dose not require your
 reddit username/password.
 
 ## Usage
-
+    export CLIENT_SECRET=foobar
+    export CLIENT_ID=baz
     lein uberjar
-    java -jar target/uberjar/ruwaterloo-clj-scraper-0.1.0-standalone.jar [args]
+    java -jar target/uberjar/ruwaterloo-clj-scraper-0.1.0-standalone.jar --user-agent
 
 This scraper is a read-only OAuth2 app. To obtain a client secret and a
 client id, navigate to the `apps` section of reddit preferences and create
@@ -16,13 +17,11 @@ a script-type app.
 ## Options
 
 Run with `--help` flag to see the options. Notably, use `--wait` to scrape
-in a loop.
+in a loop. A user agent is required, and should be provided with `--user-agent`.
 
 ## Examples
 
-    java -jar foo.jar --client-id $CLIENT_ID \
-        --client-secret $CLIENT_SECRET \
-        --user-agent $USER_AGENT
+    java -jar foo.jar --user-agent $USER_AGENT
 
 ## License
 
