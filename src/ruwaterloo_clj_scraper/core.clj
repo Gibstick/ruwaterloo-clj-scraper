@@ -128,9 +128,31 @@
       (reduce +))))
 
 
-(defn- after [db subreddit]
+(defn- fetch-after [db subreddit]
   (first (jdbc/fetch db ["select after from status where subreddit = ?"
                          subreddit])))
+
+(defn- scrape!*
+  "This exists because jdbc/atomic wraps the body
+  in a function, breaking recur targets."
+  ([db reddit after force? rate-limiter]
+   (let [limit 100
+         params (cond-> {:limit limit} after (assoc :after after))
+         resp (reddit-get->json reddit "https://oauth.reddit.com/r/uwaterloo/new.json"
+                                params)
+         posts (get-in resp [:data :children])
+         next-after (get-in resp [:data :after])
+         inserted (insert-posts! db "ruwaterloo_posts" ruwaterloo-posts-schema posts)]
+     (assert (<= inserted limit) "Only inserts up to limit")
+
+     (timbre/debugf "Next after: %s" next-after)
+     (timbre/infof "Inserted %s" inserted)
+
+     ;; next-after is nil (not present?) when we've exhausted the listing
+     (when (or (and force? next-after)
+               (= inserted limit))
+       next-after))))
+
 
 (defn scrape!
   "Scrape /r/uwaterloo as far back as possible.
@@ -144,51 +166,35 @@
   real problem is actually scaled up by 100 since we fetch in
   batches of 100).
 
-  To force a full scrape, set :force? to true. When this is set,
-  the function does not look at the database to keep track of
-  when to stop and tries to grab the full 1000 posts.
-
   In practice this isn't much of a problem, because we can
-  periodically do full-scrapes of all 1000 posts accessible
-  at this endpoint.
+  periodically do full-scrapes of all 1000 posts accessible at
+  this endpoint.
+
+  To force a full scrape, set :force? to true. When this is set,
+  the function tries to page through all 1000 posts.
 
   This function runs synchronously and makes at most 1 request
   per second, as per reddit's rate limits. We don't do anything
   fancy -- if a request takes longer than 1 second, the next
   request will be made as soon as the current one finishes.
 
-  Set :rate-limiter in opts to a channel that controls rate limiting.
-  The channel should be ready for taking at most once per second.
+  Optionally set :rate-limiter in opts to a channel that controls
+  rate limiting. The channel should be ready for taking at most
+  once per second.
   "
   ([db reddit] (scrape! db reddit {}))
   ([db reddit {:keys [force? rate-limiter]}]
-   (loop [after (after db "uwaterloo")
-          seen #{}]
-     (let [limit 100
-           params (cond-> {:limit limit} after (assoc :after after))
-           timer (or rate-limiter (timeout 1000))
-           resp (reddit-get->json reddit "https://oauth.reddit.com/r/uwaterloo/new.json"
-                                  params)
-           posts (get-in resp [:data :children])
-           next-after (get-in resp [:data :after])
-           inserted (insert-posts! db "ruwaterloo_posts" ruwaterloo-posts-schema posts)
-
-           ;; keep track of seen post IDs if :force?
-           post-ids
-           (and force? (into #{} (map #(get-in % [:data :id])) posts))
-
-           intersect
-           (clojure.set/intersection post-ids seen)]
-       (assert (<= inserted limit) "Only inserts up to limit")
-
-       (timbre/infof "Inserted %s" inserted)
-       (timbre/debugf "%s post(s) were repeated" (count intersect))
-
-       (when (or (and force? (empty? intersect))
-                 (= inserted limit))
+   (loop [after (fetch-after db "uwaterloo")]
+     ;; This is really stupid.
+     ;; jdbc/atomic wraps the body in a function, which creates a new recur target!
+     (let [timer (or rate-limiter (timeout 1000))
+           next-after
+           (jdbc/atomic db
+             (scrape!* db reddit after force? rate-limiter))]
+       (when next-after
          (timbre/debugf "Waiting on rate limiter")
          (<!! timer)
-         (recur next-after (clojure.set/union post-ids seen)))))))
+         (recur next-after ))))))
 
 ;; inserting into status table is obsolete?
 (comment
