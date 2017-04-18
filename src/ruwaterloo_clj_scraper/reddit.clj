@@ -64,9 +64,9 @@
   ([reddit url query-params]
    (let [query-params (assoc query-params :raw_json 1)
          reddit (reddit-refresh-readonly reddit)
-         headers {"User-Agent"    (:user-agent reddit)
-                  "Authorization" (str "Bearer: " (:access-token reddit))}]
+         headers {"User-Agent"    (:user-agent reddit)}]
      (http/get url {:headers          headers
+                    :oauth-token      (:access-token reddit)
                     :query-params     query-params
                     :throw-exceptions false}))))
 
