@@ -284,9 +284,5 @@
                      {:force? force? :rate-limiter rate-limiter})
             (when wait-seconds
               (timbre/infof "Waiting %ss between scrapes" wait-seconds)
-              ;; this code is too general right now but we want to be safe
-              ;; wait for the longer of the two
-              (doseq [chan [(go (<! (timeout (* wait-seconds 1000))))
-                            (go (<! rate-limiter))]]
-                (<!! chan))
+              (<!! (timeout (* wait-seconds 1000)))
               (recur))))))))
