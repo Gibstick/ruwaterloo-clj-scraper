@@ -1,4 +1,5 @@
 (ns ruwaterloo-clj-scraper.core
+  (:refer-clojure :exclude [parse-opts])
   (:require
     [ruwaterloo-clj-scraper.reddit :refer :all]
     [clojure.string :as str]
@@ -226,6 +227,12 @@
    ])
 
 
+(defn exit
+  [exit-message exit-code]
+  (do
+    (println exit-message)
+    (System/exit exit-code)))
+
 ;; inspired by https://github.com/clojure/tools.cli
 (defn validate-args
   [args]
@@ -234,11 +241,13 @@
 
     (cond
       errors
-      {:exit-message (str (str/join \newline errors) "\n\n" summary)
-       :exit-code    1}
+      (exit (str (str/join \newline errors) "\n\n" summary) 1)
 
       (:help options)
-      {:exit-message summary :exit-code 0}
+      (exit summary 0)
+
+      (nil? (:user-agent options))
+      (exit "No user agent supplied. Please run the script with the flag \"--user-agent %USER_AGENT\"." 1)
 
       :else
       (assoc options :ok? true))))
@@ -255,8 +264,7 @@
         _ (assert client-id)
         _ (assert client-secret)
 
-        {:keys [ok? user-agent force? wait-seconds verbosity
-                exit-code exit-message]}
+        {:keys [ok? user-agent force? wait-seconds verbosity]}
         (validate-args args)
 
         rate-limiter (chan 1)
@@ -267,22 +275,17 @@
       (timbre/set-level!
         (->> (count timbre-log-levels) dec (min verbosity) (nth timbre-log-levels)))
 
-      (if-not ok?
-        (do
-          (println exit-message)
-          (System/exit exit-code))
-        (do
-          (initialize-db! conn)
-          (go-loop []
-            (timbre/debug "Allowing 1 request")
-            (<! (timeout 1000))
-            (>! rate-limiter true)
-            (recur))
-          (loop []
-            (timbre/info "Scraping")
-            (scrape! conn reddit
-                     {:force? force? :rate-limiter rate-limiter})
-            (when wait-seconds
-              (timbre/infof "Waiting %ss between scrapes" wait-seconds)
-              (<!! (timeout (* wait-seconds 1000)))
-              (recur))))))))
+      (initialize-db! conn)
+      (go-loop []
+        (timbre/debug "Allowing 1 request")
+        (<! (timeout 1000))
+        (>! rate-limiter true)
+        (recur))
+      (loop []
+        (timbre/info "Scraping")
+        (scrape! conn reddit
+                 {:force? force? :rate-limiter rate-limiter})
+        (when wait-seconds
+          (timbre/infof "Waiting %ss between scrapes" wait-seconds)
+          (<!! (timeout (* wait-seconds 1000)))
+          (recur))))))
