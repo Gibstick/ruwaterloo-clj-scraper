@@ -227,7 +227,7 @@
    ])
 
 
-(defn exit
+(defn validate-args!
   [exit-message exit-code]
   (do
     (println exit-message)
@@ -241,13 +241,13 @@
 
     (cond
       errors
-      (exit (str (str/join \newline errors) "\n\n" summary) 1)
+      (validate-args! (str (str/join \newline errors) "\n\n" summary) 1)
 
       (:help options)
-      (exit summary 0)
+      (validate-args! summary 0)
 
       (nil? (:user-agent options))
-      (exit "No user agent supplied. Please run the script with the flag \"--user-agent %USER_AGENT\"." 1)
+      (validate-args! "No user agent supplied. Please run the script with the flag \"--user-agent %USER_AGENT\"." 1)
 
       :else
       (assoc options :ok? true))))
